@@ -431,10 +431,12 @@ function AddSheet({ closetId, onDone }) {
     if (!file) return
     setProcessing(true)
     try {
-      const ext = (file.name ? file.name.split('.').pop() : 'jpg').toLowerCase() || 'jpg'
+      // 上传前先把照片压小（顺便把 iPhone 的 HEIC 转成 JPG），避免太大或格式不兼容
+      const out = await shrinkImage(file)
+      const ext = (out.name ? out.name.split('.').pop() : 'jpg').toLowerCase() || 'jpg'
       const outfitId = crypto.randomUUID()
       const path = `${closetId}/${outfitId}.${ext}`
-      await upstore(path, file)
+      await upstore(path, out)
       const { error } = await supabase.from('outfits').insert({
         id: outfitId,
         closet_id: closetId,
@@ -558,4 +560,27 @@ function InviteSheet({ open, onClose, closet, owner, inviteCode, onJoin, busy })
 async function upstore(path, file) {
   const { error } = await supabase.storage.from('outfits').upload(path, file, { upsert: true })
   if (error) throw error
+}
+
+// 把照片压小并统一转成 JPG（最长边 1600px，质量 0.85），
+// HEIC 等浏览器读不了的格式会直接在这里转成 JPG。
+async function shrinkImage(file) {
+  try {
+    const bitmap = await createImageBitmap(file)
+    const max = 1600
+    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close?.()
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85))
+    if (!blob) return file // 万一失败，退回原图
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
+  } catch {
+    return file // 兼容老浏览器或异常：退回原图
+  }
 }
