@@ -226,12 +226,12 @@ function Home({ session }) {
                 ))}
               </div>
             )}
-            {current && <Wardrobe key={current.id} closetId={current.id} myName={myName} />}
+            {current && <Wardrobe key={current.id} closetId={current.id} />}
           </>
         )}
       </main>
 
-      {current && <AddSheet closetId={current.id} myName={myName} onDone={() => setReloadKey((k) => k + 1)} />}
+      {current && <AddSheet closetId={current.id} onDone={() => setReloadKey((k) => k + 1)} />}
 
       {closets && closets.length > 0 && (
         <InviteSheet
@@ -262,9 +262,18 @@ function EmptyState({ onCreate, busy }) {
   )
 }
 
-// ---------------- 衣橱（照片网格） ----------------
-function Wardrobe({ closetId, myName }) {
-  const [outfits, setOutfits] = useState(null)
+// ---------------- 从头到脚的五类部位 ----------------
+const CATEGORIES = [
+  { id: 'hat',    label: '帽子', emoji: '🧢' },
+  { id: 'outer',  label: '外套', emoji: '🧥' },
+  { id: 'top',    label: '内搭', emoji: '👕' },
+  { id: 'bottom', label: '裤子', emoji: '👖' },
+  { id: 'shoes',  label: '鞋子', emoji: '👟' },
+].map((c, i) => ({ ...c, index: i }))
+
+// ---------------- 衣橱（一套搭配 = 一组从头到脚的照片） ----------------
+function Wardrobe({ closetId }) {
+  const [looks, setLooks] = useState(null)
   const [err, setErr] = useState('')
   const [viewer, setViewer] = useState(null)
 
@@ -272,25 +281,31 @@ function Wardrobe({ closetId, myName }) {
     let alive = true
     ;(async () => {
       setErr('')
-      const { data, error } = await supabase
-        .from('outfits')
-        .select('id, title, note, image_path, created_at, user:user_id')
-        .eq('closet_id', closetId)
-        .order('created_at', { ascending: false })
-      if (error || !alive) { if (alive) setErr(error?.message || '载入失败'); return }
-      setOutfits(data || [])
+      const [oRes, iRes] = await Promise.all([
+        supabase.from('outfits').select('id, title, note, created_at').eq('closet_id', closetId).order('created_at', { ascending: false }),
+        supabase.from('outfit_items').select('id, outfit_id, category, image_path, position').eq('closet_id', closetId),
+      ])
+      if (!alive) return
+      if (oRes.error || iRes.error) { setErr((oRes.error || iRes.error)?.message || '载入失败'); return }
+      const byOutfit = {}
+      ;(iRes.data || []).forEach((it) => { (byOutfit[it.outfit_id] ||= []).push(it) })
+      const list = (oRes.data || []).map((o) => {
+        const items = (byOutfit[o.id] || []).slice().sort((a, b) => a.position - b.position)
+        return { ...o, items, cover: items.find((i) => i.image_path)?.image_path || null }
+      })
+      setLooks(list)
     })()
     return () => { alive = false }
   }, [closetId])
 
   if (err) return <div className="center pad"><p className="error">{err}</p></div>
-  if (!outfits) return <div className="center pad"><p className="muted dim">载入中…</p></div>
-  if (outfits.length === 0) {
+  if (!looks) return <div className="center pad"><p className="muted dim">载入中…</p></div>
+  if (looks.length === 0) {
     return (
       <div className="card block center">
         <div className="empty-emoji">📸</div>
         <h2>衣橱还空着</h2>
-        <p className="muted">点右下角的「＋」，把你们搭配好的衣服拍下来或传上来</p>
+        <p className="muted">点右下角的「＋」，按「帽子 → 鞋子」传一套搭配的照片</p>
       </div>
     )
   }
@@ -298,58 +313,70 @@ function Wardrobe({ closetId, myName }) {
   return (
     <>
       <div className="grid">
-        {outfits.map((o) => (
-          <Tile key={o.id} outfit={o} onOpen={setViewer} />
+        {looks.map((o) => (
+          <Tile key={o.id} look={o} onOpen={setViewer} />
         ))}
       </div>
-      {viewer && <Viewer outfit={viewer} onClose={() => setViewer(null)} myName={myName} />}
+      {viewer && <Viewer look={viewer} onClose={() => setViewer(null)} />}
     </>
   )
 }
 
-function Tile({ outfit, onOpen }) {
+function Tile({ look, onOpen }) {
   const [url, setUrl] = useState(null)
   const [failed, setFailed] = useState(false)
 
+  const cover = look.cover
   useEffect(() => {
     let alive = true
-    const path = outfit.image_path
-    if (path.startsWith('data:') || path.startsWith('blob:')) { setUrl(path); return }
+    setUrl(null); setFailed(false)
+    if (!cover) return
+    if (cover.startsWith('data:') || cover.startsWith('blob:')) { setUrl(cover); return }
     ;(async () => {
-      const { data } = await supabase.storage.from('outfits').createSignedUrl(path, 3600)
+      const { data } = await supabase.storage.from('outfits').createSignedUrl(cover, 3600)
       if (alive) setUrl(data?.signedUrl || null)
     })()
     return () => { alive = false }
-  }, [outfit.image_path])
+  }, [cover])
 
   async function remove(e) {
     e.stopPropagation()
-    const yes = confirm('删除这件搭配？')
+    const yes = confirm('删除这套搭配？')
     if (!yes) return
-    const { error } = await supabase.from('outfits').delete().eq('id', outfit.id)
-    if (!error && !outfit.image_path.startsWith('data:') && !outfit.image_path.startsWith('blob:')) {
-      await supabase.storage.from('outfits').remove([outfit.image_path])
-    }
+    const { error } = await supabase.from('outfits').delete().eq('id', look.id)
     if (error) alert(error.message)
     else window.location.reload()
   }
 
-  const thumb = url || (failed ? fallbackThumb(outfit.image_path) : embeddedCover())
+  const thumb = url || (failed ? fallbackThumb(cover) : embeddedCover())
 
   return (
-    <figure className="tile" onClick={() => onOpen({ ...outfit, url })} role="button" tabIndex={0}>
+    <figure className="tile" onClick={() => onOpen(look)} role="button" tabIndex={0}>
       <div className="tile-img">
         <img
           src={thumb}
-          alt={outfit.title || '搭配'}
+          alt={look.title || '搭配'}
           loading="lazy"
           onError={() => setFailed(true)}
         />
       </div>
-      {outfit.title && <figcaption className="tile-cap">{outfit.title}</figcaption>}
+      <div className="tile-cap">
+        {look.title || `${look.items.length} 件单品`}
+      </div>
+      {look.items.length > 0 && (
+        <div className="tile-tags">
+          {look.items.slice().sort((a, b) => a.position - b.position).map((it) => (
+            <span key={it.id} className="tag">{catById(it.category)?.emoji || '👕'}</span>
+          ))}
+        </div>
+      )}
       <button className="tile-del" onClick={remove} aria-label="删除">✕</button>
     </figure>
   )
+}
+
+function catById(id) {
+  return CATEGORIES.find((c) => c.id === id)
 }
 
 function fallbackThumb(originalPath) {
@@ -375,39 +402,64 @@ function embeddedCover() {
 }
 
 // ---------------- 大图查看 ----------------
-function Viewer({ outfit, onClose, myName }) {
-  const [url, setUrl] = useState(outfit.url || null)
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    if (url) return
-    if (outfit.image_path.startsWith('data:') || outfit.image_path.startsWith('blob:')) { setUrl(outfit.image_path); return }
-    ;(async () => {
-      const { data } = await supabase.storage.from('outfits').createSignedUrl(outfit.image_path, 3600)
-      setUrl(data?.signedUrl || null)
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const when = outfit.created_at ? formatTime(outfit.created_at) : ''
+function Viewer({ look, onClose }) {
+  const items = (look.items || []).slice().sort((a, b) => a.position - b.position)
+  const when = look.created_at ? formatTime(look.created_at) : ''
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="viewer" onClick={(e) => e.stopPropagation()}>
-        <div className="viewer-img">
-          {!failed ? (
-            <img src={url || fallbackThumb(outfit.image_path)} alt={outfit.title || '搭配'} onError={() => setFailed(true)} />
+        <div className="viewer-scroll">
+          <div className="viewer-head">
+            {look.title && <h3>{look.title}</h3>}
+            {look.note && <p className="note">{look.note}</p>}
+          </div>
+
+          {items.length === 0 ? (
+            <p className="muted center pad">这套还没上传照片</p>
           ) : (
-            <div className="fallback-note">图片加载失败</div>
+            <div className="look-list">
+              {items.map((it) => (
+                <LookRow key={it.id} item={it} />
+              ))}
+            </div>
           )}
-        </div>
-        <div className="viewer-body">
-          {outfit.title && <h3>{outfit.title}</h3>}
-          {outfit.note && <p className="note">{outfit.note}</p>}
-          {when && <p className="muted dim small">{when}</p>}
+
+          {when && <p className="muted dim small viewer-when">{when}</p>}
         </div>
         <button className="viewer-close" onClick={onClose}>✕</button>
       </div>
+    </div>
+  )
+}
+
+function LookRow({ item }) {
+  const cat = catById(item.category)
+  const [url, setUrl] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    const p = item.image_path
+    if (!p) return
+    if (p.startsWith('data:') || p.startsWith('blob:')) { setUrl(p); return }
+    ;(async () => {
+      const { data } = await supabase.storage.from('outfits').createSignedUrl(p, 3600)
+      if (alive) setUrl(data?.signedUrl || null)
+    })()
+    return () => { alive = false }
+  }, [item.image_path])
+
+  return (
+    <div className="look-row">
+      <div className="look-row-img">
+        {!failed ? (
+          <img src={url || fallbackThumb(item.image_path)} alt={cat?.label || '单品'} onError={() => setFailed(true)} />
+        ) : (
+          <div className="fallback-note">加载失败</div>
+        )}
+      </div>
+      <div className="look-row-label">{cat?.emoji || '👕'} {cat?.label || '单品'}</div>
     </div>
   )
 }
@@ -420,58 +472,84 @@ function formatTime(iso) {
   } catch { return '' }
 }
 
-// ---------------- 添加搭配 ----------------
+// ---------------- 添加搭配（一套 = 从头到脚多张） ----------------
 function AddSheet({ closetId, onDone }) {
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
-  const [method, setMethod] = useState('') // '' | 'camera' | 'album'
-  const [processing, setProcessing] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState({}) // category -> { file, preview }
+  const [saving, setSaving] = useState(false)
 
-  async function onPick(file) {
+  function reset() {
+    setTitle(''); setNote(''); setItems({})
+  }
+  function close() {
+    if (saving) return
+    setOpen(false)
+    reset()
+  }
+
+  async function onPick(category, file) {
     if (!file) return
-    setProcessing(true)
+    let preview = null
+    try { preview = URL.createObjectURL(file) } catch { /* ignore */ }
+    setItems((cur) => ({ ...cur, [category]: { file, preview } }))
+  }
+
+  async function save() {
+    setSaving(true)
+    const used = CATEGORIES.filter((c) => items[c.id]?.file)
     try {
-      // 上传前先把照片压小（顺便把 iPhone 的 HEIC 转成 JPG），避免太大或格式不兼容
-      const out = await shrinkImage(file)
-      const ext = (out.name ? out.name.split('.').pop() : 'jpg').toLowerCase() || 'jpg'
+      if (used.length === 0) throw new Error('请至少上传一张照片')
       const outfitId = crypto.randomUUID()
-      const path = `${closetId}/${outfitId}.${ext}`
-      await upstore(path, out)
-      const { error } = await supabase.from('outfits').insert({
-        id: outfitId,
-        closet_id: closetId,
-        image_path: path,
-        title: title.trim() || null,
-        note: note.trim() || null,
+      // 先建「一套搭配」这条记录
+      const { error: oErr } = await supabase.from('outfits').insert({
+        id: outfitId, closet_id: closetId,
+        title: title.trim() || null, note: note.trim() || null,
       })
-      if (error) throw error
+      if (oErr) throw oErr
+      // 再逐张上传照片并写进 outfit_items
+      for (const c of used) {
+        const out = await shrinkImage(items[c.id].file)
+        const ext = (out.name ? out.name.split('.').pop() : 'jpg').toLowerCase() || 'jpg'
+        const path = `${closetId}/${outfitId}/${c.id}.${ext}`
+        await upstore(path, out)
+        const { error: iErr } = await supabase.from('outfit_items').insert({
+          outfit_id: outfitId, closet_id: closetId,
+          category: c.id, image_path: path, position: c.index,
+        })
+        if (iErr) throw iErr
+      }
+      close()
       onDone()
     } catch (e) {
       alert('上传失败：' + (e.message || e))
     } finally {
-      setProcessing(false)
+      setSaving(false)
     }
   }
 
   return (
     <>
-      {method !== '' && (
-        <div className="overlay" onClick={() => setMethod('')}>
+      {open && (
+        <div className="overlay" onClick={close}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            {processing ? (
+            {saving ? (
               <div className="pad center">
                 <div className="spinner" />
                 <p className="muted">上传中…</p>
               </div>
             ) : (
               <>
-                <h3>新增搭配</h3>
+                <h3>新增一套搭配</h3>
+                <p className="muted small">按顺序上传：帽子 → 外套 → 内搭 → 裤子 → 鞋子（可选）</p>
+
                 <label className="field">
                   <span>标题（可选）</span>
                   <input
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="例如：约会日 — 白衬衫配牛仔裤"
+                    placeholder="例如：约会日"
                     maxLength={40}
                   />
                 </label>
@@ -480,27 +558,52 @@ function AddSheet({ closetId, onDone }) {
                   <textarea
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
-                    placeholder="这件和哪双鞋最搭…"
+                    placeholder="这套什么时候穿、怎么搭更好看…"
                     rows={2}
                   />
                 </label>
-                <div className="method-row">
-                  <label className="method-btn">
-                    📷 拍照
-                    <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => onPick(e.target.files[0])} />
-                  </label>
-                  <label className="method-btn">
-                    🖼 相册
-                    <input type="file" accept="image/*" hidden onChange={(e) => onPick(e.target.files[0])} />
-                  </label>
+
+                <div className="cat-list">
+                  {CATEGORIES.map((c) => (
+                    <CatRow key={c.id} cat={c} item={items[c.id]} onPick={(f) => onPick(c.id, f)} />
+                  ))}
                 </div>
+
+                <button className="primary" onClick={save} disabled={Object.keys(items).length === 0}>
+                  保存这套搭配
+                </button>
               </>
             )}
           </div>
         </div>
       )}
-      <button className="fab" onClick={() => setMethod('camera')} aria-label="添加">＋</button>
+      <button className="fab" onClick={() => setOpen(true)} aria-label="添加">＋</button>
     </>
+  )
+}
+
+function CatRow({ cat, item, onPick }) {
+  const has = Boolean(item?.file)
+  return (
+    <div className={`cat-row ${has ? 'has' : ''}`}>
+      <div className="cat-row-head">
+        <span className="cat-row-name">{cat.emoji} {cat.label}</span>
+      </div>
+      {has ? (
+        <div className="cat-row-body">
+          {item.preview && <img className="cat-thumb" src={item.preview} alt={cat.label} />}
+          <label className="cat-repick">
+            换一张
+            <input type="file" accept="image/*" hidden onChange={(e) => onPick(e.target.files[0])} />
+          </label>
+        </div>
+      ) : (
+        <label className="cat-add">
+          ＋ 拍照
+          <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => onPick(e.target.files[0])} />
+        </label>
+      )}
+    </div>
   )
 }
 
