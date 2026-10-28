@@ -336,12 +336,13 @@ textarea { resize: vertical; }
   cursor: pointer;
   text-decoration: underline;
 }
+.cat-add-row { display: flex; gap: 10px; }
 .cat-add {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  width: 100%;
+  flex: 1;
   padding: 12px;
   border: 1px dashed var(--line);
   border-radius: 10px;

@@ -598,10 +598,16 @@ function CatRow({ cat, item, onPick }) {
           </label>
         </div>
       ) : (
-        <label className="cat-add">
-          ＋ 拍照
-          <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => onPick(e.target.files[0])} />
-        </label>
+        <div className="cat-add-row">
+          <label className="cat-add">
+            📷 拍照
+            <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => onPick(e.target.files[0])} />
+          </label>
+          <label className="cat-add">
+            🖼 上传
+            <input type="file" accept="image/*" hidden onChange={(e) => onPick(e.target.files[0])} />
+          </label>
+        </div>
       )}
     </div>
   )
